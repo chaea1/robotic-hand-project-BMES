@@ -1,0 +1,339 @@
+/*
+ * Robotic Hand Control with Flex Sensors and Moving Average Smoothing
+ * 
+ * Wiring:
+ * - Flex sensors on A1, A2, A3, A4, A5
+ * - Servos on pins 2, 3, 4, 5, 6
+ * 
+ * Instructions:
+ * 1. Upload this code
+ * 2. Open Serial Monitor (9600 baud)
+ * 3. Set TEST_MODE below to test individual fingers
+ * 4. Set SERIAL_PRINT_INTERVAL to control how often data is printed
+ * 5. Note the raw flex values for each finger (open and closed)
+ * 6. Replace the placeholder MIN/MAX values below with your observed values
+ * 7. Re-upload for optimal performance
+ */
+
+#include <Servo.h>
+
+// ========== TEST MODE SETTINGS ==========
+// Change this to test individual fingers:
+// 0 = NORMAL MODE - all fingers active
+// 1 = TEST THUMB ONLY
+// 2 = TEST INDEX ONLY
+// 3 = TEST MIDDLE ONLY
+// 4 = TEST RING ONLY
+// 5 = TEST PINKY ONLY
+const int TEST_MODE = 0;  // Set to 0 for normal operation, 1-5 for single finger test
+
+// ========== SERIAL MONITOR SETTINGS ==========
+// How often to print to Serial Monitor (in milliseconds)
+// Does NOT affect hand response speed - the hand still updates every 20ms
+// 
+// Recommended values:
+//   0     = Print every loop (every 20ms) - FASTEST, but may slow down Serial
+//   100   = Print 10 times per second (good for monitoring)
+//   200   = Print 5 times per second (good for general use)
+//   500   = Print 2 times per second (less clutter)
+//   1000  = Print once per second (minimal clutter)
+const int SERIAL_PRINT_INTERVAL = 1000;  // Print every 100ms (10 times per second)
+
+// Servo objects
+Servo servo1;
+Servo servo2;
+Servo servo3;
+Servo servo4;
+Servo servo5;
+
+// Flex sensor pins (matching original wiring)
+const int flexPin1 = A1;  // ring
+const int flexPin2 = A3;  // index
+const int flexPin3 = A0;  // middle
+const int flexPin4 = A4;  // thumb
+const int flexPin5 = A5;  // pinky
+
+// Servo output pins
+const int servoPin1 = 2;   // ring servo
+const int servoPin2 = 5;   // index servo
+const int servoPin3 = 4;   // middle servo
+const int servoPin4 = 3;   // thumb servo
+const int servoPin5 = 6;   // pinky servo
+
+// ========== CALIBRATION VALUES ==========
+// Replace these with values you read from Serial Monitor:
+//   MIN = finger fully open (straight)
+//   MAX = finger fully bent (fist)
+// Format: {MIN, MAX}
+const int flexRange[5][2] = {
+  {813, 894},   // Sensor 0(A1) - ring finger
+  {819, 915},   // Sensor 1 (A3) - index finger
+  {737, 871},   // Sensor 2 (A0) - middle finger
+  {794, 710},   // Sensor 3 (A4) - thumb finger (REVERSED: min/max swapped)
+  {765, 887}    // Sensor 4 (A5) - pinky finger
+};
+
+// ========== MOVING AVERAGE SETTINGS ==========
+const int WINDOW_SIZE = 5;
+int readings[5][WINDOW_SIZE];
+int readIndex = 0;
+long totals[5] = {0, 0, 0, 0, 0};
+
+// ========== SETUP ==========
+void setup() {
+  Serial.begin(9600);
+  
+  // Attach servos
+  servo1.attach(servoPin1);
+  servo2.attach(servoPin2);
+  servo3.attach(servoPin3);
+  servo4.attach(servoPin4);
+  servo5.attach(servoPin5);
+  
+  // Initialize smoothing buffers with first readings
+  for (int s = 0; s < 5; s++) {
+    int initialValue = analogRead(getFlexPin(s));
+    for (int i = 0; i < WINDOW_SIZE; i++) {
+      readings[s][i] = initialValue;
+      totals[s] += initialValue;
+    }
+  }
+  
+  Serial.println("==========================================");
+  Serial.println("Robotic Hand Ready");
+  Serial.println("==========================================");
+  
+  // Display test mode information
+  if (TEST_MODE == 0) {
+    Serial.println("MODE: NORMAL - All fingers active");
+  } else {
+    Serial.print("MODE: TESTING - ");
+    switch(TEST_MODE) {
+      case 1: 
+        Serial.println("THUMB only");
+        Serial.println("Other servos will stay at 0 degrees");
+        Serial.println("Only thumb flex sensor (A4) will be read");
+        break;
+      case 2: 
+        Serial.println("INDEX only");
+        Serial.println("Other servos will stay at 0 degrees");
+        Serial.println("Only index flex sensor (A3) will be read");
+        break;
+      case 3: 
+        Serial.println("MIDDLE only");
+        Serial.println("Other servos will stay at 0 degrees");
+        Serial.println("Only middle flex sensor (A0) will be read");
+        break;
+      case 4: 
+        Serial.println("RING only");
+        Serial.println("Other servos will stay at 0 degrees");
+        Serial.println("Only ring flex sensor (A1) will be read");
+        break;
+      case 5: 
+        Serial.println("PINKY only");
+        Serial.println("Other servos will stay at 0 degrees");
+        Serial.println("Only pinky flex sensor (A5) will be read");
+        break;
+    }
+  }
+  
+  Serial.println("Thumb control: REVERSED (min/max swapped for backwards servo)");
+  
+  // Display serial print interval setting
+  if (SERIAL_PRINT_INTERVAL == 0) {
+    Serial.println("Serial Print: EVERY LOOP (every ~20ms)");
+  } else {
+    Serial.print("Serial Print: EVERY ");
+    Serial.print(SERIAL_PRINT_INTERVAL);
+    Serial.println("ms");
+  }
+  Serial.println("NOTE: Hand updates every 20ms regardless of serial printing");
+  Serial.println("==========================================");
+  Serial.println("");
+}
+
+// Helper: get flex pin number by sensor index (0-based)
+int getFlexPin(int sensorIndex) {
+  switch(sensorIndex) {
+    case 0: return flexPin1;
+    case 1: return flexPin2;
+    case 2: return flexPin3;
+    case 3: return flexPin4;
+    case 4: return flexPin5;
+    default: return A1;
+  }
+}
+
+// Helper: get servo object by index
+Servo& getServo(int index) {
+  switch(index) {
+    case 0: return servo1;
+    case 1: return servo2;
+    case 2: return servo3;
+    case 3: return servo4;
+    case 4: return servo5;
+    default: return servo1;
+  }
+}
+
+// Helper: check if a finger should be active in test mode
+bool isFingerActive(int fingerIndex) {
+  if (TEST_MODE == 0) return true;  // Normal mode - all active
+  
+  // TEST_MODE is 1-5, fingerIndex is 0-4
+  // Map: fingerIndex 0=ring, 1=index, 2=middle, 3=thumb, 4=pinky
+  // TEST_MODE: 1=thumb, 2=index, 3=middle, 4=ring, 5=pinky
+  
+  switch(TEST_MODE) {
+    case 1: return (fingerIndex == 3);  // Thumb only
+    case 2: return (fingerIndex == 1);  // Index only
+    case 3: return (fingerIndex == 2);  // Middle only
+    case 4: return (fingerIndex == 0);  // Ring only
+    case 5: return (fingerIndex == 4);  // Pinky only
+    default: return false;
+  }
+}
+
+// Moving average filter for one sensor
+int smoothReading(int sensorIndex, int newRaw) {
+  totals[sensorIndex] -= readings[sensorIndex][readIndex];
+  readings[sensorIndex][readIndex] = newRaw;
+  totals[sensorIndex] += newRaw;
+  return totals[sensorIndex] / WINDOW_SIZE;
+}
+
+// ========== MAIN LOOP ==========
+void loop() {
+  // 1. Read raw values from all 5 sensors
+  int raw[5];
+  raw[0] = analogRead(flexPin1);
+  raw[1] = analogRead(flexPin2);
+  raw[2] = analogRead(flexPin3);
+  raw[3] = analogRead(flexPin4);
+  raw[4] = analogRead(flexPin5);
+  
+  // 2. Apply moving average smoothing
+  int smoothed[5];
+  for (int i = 0; i < 5; i++) {
+    smoothed[i] = smoothReading(i, raw[i]);
+  }
+  
+  // 3. Update the circular buffer index for next loop
+  readIndex = (readIndex + 1) % WINDOW_SIZE;
+  
+  // 4. Map smoothed values to servo angles (0-180)
+  int angles[5];
+  for (int i = 0; i < 5; i++) {
+    angles[i] = map(smoothed[i], 
+                    flexRange[i][0], flexRange[i][1],
+                    0, 180);
+    angles[i] = constrain(angles[i], 0, 180);
+  }
+  
+  // 5. Write angles to servos based on test mode
+  for (int i = 0; i < 5; i++) {
+    if (isFingerActive(i)) {
+      // Active finger follows sensor input
+      getServo(i).write(angles[i]);
+    } else {
+      // Inactive finger goes to 0 degrees (open position)
+      getServo(i).write(0);
+    }
+  }
+  
+  // 6. Print to Serial Monitor at user-defined interval
+  //    This does NOT affect the hand update rate (hand updates every 20ms regardless)
+  static unsigned long lastPrint = 0;
+  unsigned long currentTime = millis();
+  
+  // Check if it's time to print (using SERIAL_PRINT_INTERVAL)
+  if (SERIAL_PRINT_INTERVAL == 0) {
+    // Print every loop (every ~20ms)
+    printSerialData(raw, angles);
+  } else if (currentTime - lastPrint >= SERIAL_PRINT_INTERVAL) {
+    printSerialData(raw, angles);
+    lastPrint = currentTime;
+  }
+  
+  // 7. Short delay for stable loop rate (20ms = 50Hz, good for servos)
+  //    The hand ALWAYS updates at this rate regardless of serial printing
+  delay(20);
+}
+
+// Helper function to handle all Serial printing
+void printSerialData(int raw[5], int angles[5]) {
+  if (TEST_MODE == 0) {
+    // NORMAL MODE: Print all fingers
+    Serial.print("RAW - Thumb:");
+    Serial.print(raw[3]);
+    Serial.print(" Index:");
+    Serial.print(raw[1]);
+    Serial.print(" Middle:");
+    Serial.print(raw[2]);
+    Serial.print(" Ring:");
+    Serial.print(raw[0]);
+    Serial.print(" Pinky:");
+    Serial.print(raw[4]);
+    
+    Serial.print(" | ANG - Thumb:");
+    Serial.print(angles[3]);
+    Serial.print(" Index:");
+    Serial.print(angles[1]);
+    Serial.print(" Middle:");
+    Serial.print(angles[2]);
+    Serial.print(" Ring:");
+    Serial.print(angles[0]);
+    Serial.print(" Pinky:");
+    Serial.println(angles[4]);
+  }
+  
+  else {
+    // TEST MODE: Print only the active finger
+    switch(TEST_MODE) {
+      case 1:  // Thumb only
+        Serial.print("THUMB TEST - Raw:");
+        Serial.print(raw[3]);
+        Serial.print(" | Angle:");
+        Serial.print(angles[3]);
+        Serial.print(" | Servo: Pin ");
+        Serial.println(servoPin4);
+        break;
+        
+      case 2:  // Index only
+        Serial.print("INDEX TEST - Raw:");
+        Serial.print(raw[1]);
+        Serial.print(" | Angle:");
+        Serial.print(angles[1]);
+        Serial.print(" | Servo: Pin ");
+        Serial.println(servoPin2);
+        break;
+        
+      case 3:  // Middle only
+        Serial.print("MIDDLE TEST - Raw:");
+        Serial.print(raw[2]);
+        Serial.print(" | Angle:");
+        Serial.print(angles[2]);
+        Serial.print(" | Servo: Pin ");
+        Serial.println(servoPin3);
+        break;
+        
+      case 4:  // Ring only
+        Serial.print("RING TEST - Raw:");
+        Serial.print(raw[0]);
+        Serial.print(" | Angle:");
+        Serial.print(angles[0]);
+        Serial.print(" | Servo: Pin ");
+        Serial.println(servoPin1);
+        break;
+        
+      case 5:  // Pinky only
+        Serial.print("PINKY TEST - Raw:");
+        Serial.print(raw[4]);
+        Serial.print(" | Angle:");
+        Serial.print(angles[4]);
+        Serial.print(" | Servo: Pin ");
+        Serial.println(servoPin5);
+        break;
+    }
+  }
+}
